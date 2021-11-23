@@ -216,6 +216,15 @@ int main(int argc, char** argv)
   SDL_Window* window = SDL_CreateWindow("VKR", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 
       1920, 1080, SDL_WINDOW_VULKAN | SDL_WINDOW_SHOWN);
 
+  // Create surface
+  // TODO: This is platform specific. Add wayland and windows stuff?
+  // TODO: Figure this stuff out. It doesn't work, but it might be handy if we don't want to use openGL.
+//#ifdef VK_USE_PLATFORM_XLIB_KHR
+  //SDL_SysWMinfo wm_info;
+  //SDL_GetWindowWMInfo(window, &wm_info);
+  //VkSurfaceKHR surface = createSurface(window, instance, &wm_info);
+//#endif
+
   VkSurfaceKHR surface = createSurfaceFromSDL(window, instance);
 
   VkSwapchainKHR swapChain = createSwapchain(device, physicalDevice, surface, &familyIndex, window);
