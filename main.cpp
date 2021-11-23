@@ -7,6 +7,7 @@
 #include <vulkan/vulkan.h>
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_syswm.h>
+#include <SDL2/SDL_vulkan.h>
 
 #define _DEBUG
 
@@ -92,6 +93,14 @@ VkSurfaceKHR createSurface(SDL_Window* window, VkInstance instance, SDL_SysWMinf
 #endif
 
   VK_CHECK(vkCreateXlibSurfaceKHR(instance, &createInfo, 0, &surface));
+  return surface;
+}
+
+VkSurfaceKHR createSurfaceFromSDL(SDL_Window* window, VkInstance instance)
+{
+  VkSurfaceKHR surface;
+  SDL_bool res = SDL_Vulkan_CreateSurface(window, instance, &surface);
+  assert(res == SDL_TRUE);
   return surface;
 }
 
@@ -207,13 +216,7 @@ int main(int argc, char** argv)
   SDL_Window* window = SDL_CreateWindow("VKR", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 
       1920, 1080, SDL_WINDOW_VULKAN | SDL_WINDOW_SHOWN);
 
-  // Create surface
-  // TODO: This is platform specific. Add wayland and windows stuff?
-#ifdef VK_USE_PLATFORM_XLIB_KHR
-  SDL_SysWMinfo wm_info;
-  SDL_GetWindowWMInfo(window, &wm_info);
-  VkSurfaceKHR surface = createSurface(window, instance, &wm_info);
-#endif
+  VkSurfaceKHR surface = createSurfaceFromSDL(window, instance);
 
   VkSwapchainKHR swapChain = createSwapchain(device, physicalDevice, surface, &familyIndex, window);
 
