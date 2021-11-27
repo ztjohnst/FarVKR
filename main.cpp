@@ -263,7 +263,12 @@ int main(int argc, char** argv)
 
       // Present swap chain to window
       uint32_t imageIndex = 0;
-      VK_CHECK(vkAcquireNextImageKHR(device, swapChain, 0, acquireSemaphore, VK_NULL_HANDLE, &imageIndex)); // TODO: assert in a loop is slow
+
+      // The assert fails on Intel GPU for some reason
+      if(vkAcquireNextImageKHR(device, swapChain, 0, acquireSemaphore, VK_NULL_HANDLE, &imageIndex) != VK_SUCCESS) // TODO: assert in a loop is slow
+      {
+        continue;
+      }
 
       VK_CHECK(vkResetCommandPool(device, commandPool, 0));
 
