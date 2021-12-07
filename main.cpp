@@ -17,7 +17,7 @@
 
 VkPhysicalDevice pickPhysicalDevice(VkPhysicalDevice* physicalDevices, uint32_t physicalDeviceCount)
 {
-  for(int i = 0 ; i < physicalDeviceCount ; i++)
+  for(uint32_t i = 0 ; i < physicalDeviceCount ; i++)
   {
     VkPhysicalDeviceProperties props;
     vkGetPhysicalDeviceProperties(physicalDevices[i], &props);
@@ -136,7 +136,19 @@ VkDevice createDevice(VkInstance instance, VkPhysicalDevice physicalDevice, uint
   return device;
 }
 
-VkSwapchainKHR createSwapchain(VkDevice device, VkPhysicalDevice physicalDevice, VkSurfaceKHR surface, uint32_t* familyIndex, SDL_Window* window)
+VkFormat getSwapchainFormat(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface)
+{
+  // TODO: Ask how many formats the device supports
+  VkSurfaceFormatKHR formats[16];
+  uint32_t formatCount = sizeof(formats) / sizeof(formats[0]);
+  VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &formatCount, formats));
+
+  assert(formatCount > 0);
+
+  return formats[0].format;
+}
+
+VkSwapchainKHR createSwapchain(VkDevice device, VkPhysicalDevice physicalDevice, VkSurfaceKHR surface, VkFormat swapchainFormat, uint32_t* familyIndex, SDL_Window* window)
 {
   // Create swap chain
   int width, height;
@@ -149,7 +161,7 @@ VkSwapchainKHR createSwapchain(VkDevice device, VkPhysicalDevice physicalDevice,
 
   createInfo.surface = surface;
   createInfo.minImageCount = 2; // For double buffer setup
-  createInfo.imageFormat = VK_FORMAT_R8G8B8A8_UNORM; // TODO: find format that device supports
+  createInfo.imageFormat = swapchainFormat; // TODO: find format that device supports
   createInfo.imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
   createInfo.imageExtent.width = width;
   createInfo.imageExtent.height = height;
@@ -192,11 +204,11 @@ VkCommandPool createCommandPool(VkDevice device, uint32_t familyIndex)
   return commandPool;
 }
 
-VkRenderPass createRenderPass(VkDevice device)
+VkRenderPass createRenderPass(VkDevice device, VkFormat format)
 {
 
   VkAttachmentDescription attachments[1] = {};
-  attachments[0].format = VK_FORMAT_R8G8B8A8_UNORM;
+  attachments[0].format = format;
   attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
   attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
   // Need to store or we can't render the contents to the screen
@@ -243,12 +255,12 @@ VkFramebuffer createFramebuffer(VkDevice device, VkRenderPass renderPass, VkImag
   return framebuffer;
 }
 
-VkImageView createImageView(VkDevice device, VkImage image)
+VkImageView createImageView(VkDevice device, VkImage image, VkFormat format)
 {
   VkImageViewCreateInfo createInfo = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
   createInfo.image = image;
   createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-  createInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+  createInfo.format = format;
   createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
   createInfo.subresourceRange.levelCount = 1;
   createInfo.subresourceRange.layerCount = 1;
@@ -257,6 +269,40 @@ VkImageView createImageView(VkDevice device, VkImage image)
   VK_CHECK(vkCreateImageView(device, &createInfo, 0, &view));
   
   return view;
+}
+
+VkShaderModule loadShader(VkDevice device, const char* path)
+{
+  FILE* file = fopen(path, "rb");
+  assert(file);
+
+  fseek(file, 0, SEEK_END);
+  uint32_t length = ftell(file);
+  assert(length >= 0);
+  fseek(file, 0, SEEK_SET);
+
+  char* buffer = (char*)malloc(length);
+  assert(buffer);
+
+  size_t rc = fread(buffer, 1, length, file);
+  assert(rc == size_t(length));
+  fclose(file);
+
+  //assert(length % 4 == 0); // Code size is uint32_t, so 4 bytes
+
+  VkShaderModuleCreateInfo createInfo = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
+  createInfo.codeSize = length;
+  createInfo.pCode = reinterpret_cast<const uint32_t*>(buffer);
+  VkShaderModule shaderModule;
+  VK_CHECK(vkCreateShaderModule(device, &createInfo, NULL, &shaderModule));
+
+  return shaderModule;
+}
+
+VkPipeline createGraphicsPipeline(VkDevice device, VkShaderModule triangleVertSM, VkShaderModule triangleFragSM)
+{
+  // TODO: Do this next time
+  //vkCreateGraphicsPipelines(VkDevice device, VkPipelineCache pipelineCache, uint32_t createInfoCount, const VkGraphicsPipelineCreateInfo *pCreateInfos, const VkAllocationCallbacks *pAllocator, VkPipeline *pPipelines)
 }
 
 int main(int argc, char** argv)
@@ -287,7 +333,7 @@ int main(int argc, char** argv)
 
   // Create surface
   // TODO: This is platform specific. Add wayland and windows stuff?
-  // TODO: Figure this stuff out. It doesn't work, but it might be handy if we don't want to use openGL.
+  // TODO: Figure this stuff out. It doesn't work, but it might be handy if we don't want to use SDL.
 //#ifdef VK_USE_PLATFORM_XLIB_KHR
   //SDL_SysWMinfo wm_info;
   //SDL_GetWindowWMInfo(window, &wm_info);
@@ -299,7 +345,9 @@ int main(int argc, char** argv)
 
   VkSurfaceKHR surface = createSurfaceFromSDL(window, instance);
 
-  VkSwapchainKHR swapChain = createSwapchain(device, physicalDevice, surface, &familyIndex, window);
+  VkFormat swapchainFormat = getSwapchainFormat(physicalDevice, surface);
+
+  VkSwapchainKHR swapChain = createSwapchain(device, physicalDevice, surface, swapchainFormat, &familyIndex, window);
 
   VkSemaphore acquireSemaphore = createSemaphore(device); // For waiting for a GPU to be done with an Image before you render to it again
   VkSemaphore releaseSemaphore = createSemaphore(device); // For waiting until command buffer commands have finished executing before showing the image on screen
@@ -307,7 +355,17 @@ int main(int argc, char** argv)
   VkQueue queue;
   vkGetDeviceQueue(device, familyIndex, 0, &queue);
 
-  VkRenderPass renderPass = createRenderPass(device);
+  // Load shaders
+  VkShaderModule triangleVertSM = loadShader(device, "shaders/triangle_vert.spv");
+  assert(triangleVertSM);
+
+  VkShaderModule triangleFragSM = loadShader(device, "shaders/triangle_frag.spv");
+  assert(triangleFragSM);
+
+  // Create graphics pipeline
+  //VkPipeline trianglePipeline = createGraphicsPipeline(device, triangleVertSM, triangleFragSM);
+
+  VkRenderPass renderPass = createRenderPass(device, swapchainFormat);
 
   VkImage swapchainImages[16]; // TODO: this is bad. Need to ask how many.
   uint32_t swapchainImageCount = sizeof(swapchainImages) / sizeof(swapchainImages[0]);
@@ -315,7 +373,7 @@ int main(int argc, char** argv)
 
   VkImageView swapchainImageViews[16];
   for(uint32_t i = 0 ; i < swapchainImageCount ; i++)
-    swapchainImageViews[i] = createImageView(device, swapchainImages[i]);
+    swapchainImageViews[i] = createImageView(device, swapchainImages[i], swapchainFormat);
 
   VkFramebuffer swapchainFramebuffers[16];
   for(uint32_t i = 0 ; i < swapchainImageCount ; i++)
@@ -357,13 +415,26 @@ int main(int argc, char** argv)
       beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
       VK_CHECK(vkBeginCommandBuffer(commandBuffer, &beginInfo));
 
-      VkClearColorValue color = { 1, 0, 1, 1};
-      VkImageSubresourceRange range = {};  
-      range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-      range.levelCount = 1;
-      range.layerCount = 1;
+      VkClearColorValue color = { 48.0f / 255.0f , 10.0f / 255.0f , 36.0f / 255.0f , 1};
 
-      vkCmdClearColorImage(commandBuffer, swapchainImages[imageIndex], VK_IMAGE_LAYOUT_GENERAL, &color, 1, &range);
+      VkClearValue clearColorValue = {};
+      clearColorValue.color = color;
+
+      VkRenderPassBeginInfo passBeginInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+      passBeginInfo.renderPass = renderPass;
+      passBeginInfo.framebuffer = swapchainFramebuffers[imageIndex];
+      passBeginInfo.renderArea.extent.width = windowWidth;
+      passBeginInfo.renderArea.extent.height = windowHeight;
+      passBeginInfo.clearValueCount = 1;
+      passBeginInfo.pClearValues = &clearColorValue;
+
+      vkCmdBeginRenderPass(commandBuffer, &passBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+      // Draw calls go here
+      //vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, trianglePipeline);
+      //vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+
+      vkCmdEndRenderPass(commandBuffer);
 
       VK_CHECK(vkEndCommandBuffer(commandBuffer));
 
@@ -394,6 +465,11 @@ int main(int argc, char** argv)
     }
   }
 
+  for(int i = 0 ; i < 16 ; i++)
+  {
+    vkDestroyFramebuffer(device, swapchainFramebuffers[i], NULL);
+  }
+  vkDestroyCommandPool(device, commandPool, NULL);
   vkDestroySwapchainKHR(device, swapChain, 0);
   vkDestroySurfaceKHR(instance, surface, NULL);
   vkDestroyDevice(device, NULL);
