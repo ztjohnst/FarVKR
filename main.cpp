@@ -106,10 +106,24 @@ VkSurfaceKHR createSurfaceFromSDL(SDL_Window* window, VkInstance instance)
   return surface;
 }
 
-
-VkDevice createDevice(VkInstance instance, VkPhysicalDevice physicalDevice, uint32_t* familyIndex)
+uint32_t getGraphicsQueueFamily(VkPhysicalDevice physicalDevice)
 {
-  *familyIndex = 0;
+  VkQueueFamilyProperties queueFamilyProperties[64];
+  uint32_t queueFamilyPropertyCount = sizeof(queueFamilyProperties) / sizeof(queueFamilyProperties[0]);
+  vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyPropertyCount, queueFamilyProperties);
+
+  for(uint32_t i = 0 ; i < queueFamilyPropertyCount ; i++)
+  {
+    if(queueFamilyProperties[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
+      return i;
+  }
+
+  assert(0);
+  return 0;
+}
+
+VkDevice createDevice(VkInstance instance, VkPhysicalDevice physicalDevice)
+{
 
   float queuePriorities[] = {1.0f};
 
@@ -299,10 +313,83 @@ VkShaderModule loadShader(VkDevice device, const char* path)
   return shaderModule;
 }
 
-VkPipeline createGraphicsPipeline(VkDevice device, VkShaderModule triangleVertSM, VkShaderModule triangleFragSM)
+VkPipelineLayout createPipelineLayout(VkDevice device)
+{
+  VkPipelineLayoutCreateInfo createInfo = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+
+  VkPipelineLayout pipelineLayout;
+  VK_CHECK(vkCreatePipelineLayout(device, &createInfo, NULL, &pipelineLayout));
+
+  return pipelineLayout;
+}
+
+VkPipeline createGraphicsPipeline(VkDevice device, VkPipelineCache pipelineCache, VkRenderPass renderPass, VkPipelineLayout layout, VkShaderModule triangleVertSM, VkShaderModule triangleFragSM)
 {
   // TODO: Do this next time
-  //vkCreateGraphicsPipelines(VkDevice device, VkPipelineCache pipelineCache, uint32_t createInfoCount, const VkGraphicsPipelineCreateInfo *pCreateInfos, const VkAllocationCallbacks *pAllocator, VkPipeline *pPipelines)
+  // Pipeline cache is really important
+  VkGraphicsPipelineCreateInfo createInfo = { VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+
+  VkPipelineShaderStageCreateInfo stages[2] {};
+  stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+  stages[0].module = triangleVertSM;
+  stages[0].pName = "main";
+  stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+  stages[1].module = triangleFragSM;
+  stages[1].pName = "main";
+
+  createInfo.stageCount = sizeof(stages) / sizeof(stages[0]);
+  createInfo.pStages = stages;
+
+  VkPipelineVertexInputStateCreateInfo vertexInputInfo = { VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+  createInfo.pVertexInputState = &vertexInputInfo;
+
+  VkPipelineInputAssemblyStateCreateInfo inputAssembly = { VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
+  inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+  createInfo.pInputAssemblyState = &inputAssembly;
+
+  VkPipelineTessellationStateCreateInfo tessellationState = { VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO };
+  createInfo.pTessellationState = &tessellationState;
+
+  VkPipelineViewportStateCreateInfo viewportState = { VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+  viewportState.viewportCount = 1;
+  viewportState.scissorCount = 1;
+  createInfo.pViewportState = &viewportState;
+
+  VkPipelineRasterizationStateCreateInfo rasterizationState = { VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+  rasterizationState.lineWidth = 1.0f;
+  createInfo.pRasterizationState = &rasterizationState;
+
+  VkPipelineMultisampleStateCreateInfo multisampleState = { VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+  multisampleState.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+  createInfo.pMultisampleState = &multisampleState;
+
+  VkPipelineDepthStencilStateCreateInfo depthStencilState = { VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
+  createInfo.pDepthStencilState = &depthStencilState;
+
+
+  VkPipelineColorBlendAttachmentState colorAttachmentState = {};
+  colorAttachmentState.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+
+  VkPipelineColorBlendStateCreateInfo colorBlendState = { VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+  colorBlendState.pAttachments = &colorAttachmentState;
+  colorBlendState.attachmentCount = 1;
+  createInfo.pColorBlendState = &colorBlendState;
+
+  VkPipelineDynamicStateCreateInfo dynamicState = { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+  VkDynamicState                dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+  dynamicState.dynamicStateCount = sizeof(dynamicStates) / sizeof(dynamicStates[0]);
+  dynamicState.pDynamicStates = dynamicStates;
+  createInfo.pDynamicState = &dynamicState;
+
+  createInfo.layout = layout;
+  createInfo.renderPass = renderPass;
+
+  VkPipeline pipeline;
+  VK_CHECK(vkCreateGraphicsPipelines(device, pipelineCache, 1, &createInfo, NULL, &pipeline));
+
+  return pipeline;
 }
 
 int main(int argc, char** argv)
@@ -324,8 +411,8 @@ int main(int argc, char** argv)
   VkPhysicalDevice physicalDevice = pickPhysicalDevice(physicalDevices, physicalDeviceCount);
   assert(physicalDevice);
 
-  uint32_t familyIndex = 0;
-  VkDevice device = createDevice(instance, physicalDevice, &familyIndex);
+  uint32_t familyIndex = getGraphicsQueueFamily(physicalDevice);
+  VkDevice device = createDevice(instance, physicalDevice);
 
   // Create Window
   SDL_Window* window = SDL_CreateWindow("VKR", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 
@@ -345,6 +432,10 @@ int main(int argc, char** argv)
 
   VkSurfaceKHR surface = createSurfaceFromSDL(window, instance);
 
+  VkBool32 presentSupprted = 0;
+  vkGetPhysicalDeviceSurfaceSupportKHR(physicalDevice, familyIndex, surface, &presentSupprted);
+  assert(presentSupprted);
+
   VkFormat swapchainFormat = getSwapchainFormat(physicalDevice, surface);
 
   VkSwapchainKHR swapChain = createSwapchain(device, physicalDevice, surface, swapchainFormat, &familyIndex, window);
@@ -362,10 +453,15 @@ int main(int argc, char** argv)
   VkShaderModule triangleFragSM = loadShader(device, "shaders/triangle_frag.spv");
   assert(triangleFragSM);
 
-  // Create graphics pipeline
-  //VkPipeline trianglePipeline = createGraphicsPipeline(device, triangleVertSM, triangleFragSM);
 
   VkRenderPass renderPass = createRenderPass(device, swapchainFormat);
+
+  VkPipelineLayout pipelineLayout = createPipelineLayout(device);
+
+  // Create graphics pipeline
+  // TODO: this is critical for performance
+  VkPipelineCache pipelineCache = VK_NULL_HANDLE;
+  VkPipeline trianglePipeline = createGraphicsPipeline(device, pipelineCache, renderPass, pipelineLayout, triangleVertSM, triangleFragSM);
 
   VkImage swapchainImages[16]; // TODO: this is bad. Need to ask how many.
   uint32_t swapchainImageCount = sizeof(swapchainImages) / sizeof(swapchainImages[0]);
@@ -430,9 +526,17 @@ int main(int argc, char** argv)
 
       vkCmdBeginRenderPass(commandBuffer, &passBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
 
+      VkViewport viewport = { 0, float(windowHeight), float(windowWidth), -float(windowHeight), 0, 1 };
+      VkRect2D scissor = {};
+      scissor.extent.height = windowHeight;
+      scissor.extent.width = windowWidth;
+
+      vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+      vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
       // Draw calls go here
-      //vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, trianglePipeline);
-      //vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+      vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, trianglePipeline);
+      vkCmdDraw(commandBuffer, 3, 1, 0, 0);
 
       vkCmdEndRenderPass(commandBuffer);
 
