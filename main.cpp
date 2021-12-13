@@ -1,3 +1,4 @@
+#include <SDL2/SDL_events.h>
 #include <SDL2/SDL_video.h>
 #include <vulkan/vulkan_core.h>
 #ifdef __linux__ 
@@ -30,6 +31,8 @@ VkPhysicalDevice pickPhysicalDevice(VkPhysicalDevice* physicalDevices, uint32_t 
       return physicalDevices[i];
     }
   }
+  
+  // TODO: Check if device supports presenting. This is weird in linux because you need the surface first, but how can we have a surface and no device?
 
   if(physicalDeviceCount > 0)
   {
@@ -125,8 +128,7 @@ uint32_t getGraphicsQueueFamily(VkPhysicalDevice physicalDevice)
       return i;
   }
 
-  assert(0);
-  return 0;
+  return VK_QUEUE_FAMILY_IGNORED;
 }
 
 VkDevice createDevice(VkInstance instance, VkPhysicalDevice physicalDevice)
@@ -185,7 +187,7 @@ VkFormat getSwapchainFormat(VkPhysicalDevice physicalDevice, VkSurfaceKHR surfac
   return formats[0].format;
 }
 
-VkSwapchainKHR createSwapchain(VkDevice device, VkPhysicalDevice physicalDevice, VkSurfaceKHR surface, VkFormat swapchainFormat, uint32_t* familyIndex, SDL_Window* window)
+VkSwapchainKHR createSwapchain(VkDevice device, VkPhysicalDevice physicalDevice, VkSurfaceKHR surface, VkFormat swapchainFormat, uint32_t* familyIndex, uint32_t width, uint32_t height, VkSwapchainKHR oldSwapchain = 0)
 {
 
   // Get surface capabilities
@@ -199,9 +201,6 @@ VkSwapchainKHR createSwapchain(VkDevice device, VkPhysicalDevice physicalDevice,
 
 
   // Create swap chain
-  int width, height;
-  SDL_GetWindowSize(window, &width, &height);
-
   VkBool32 supported;
   VK_CHECK(vkGetPhysicalDeviceSurfaceSupportKHR(physicalDevice, *familyIndex, surface, &supported));
   assert(supported == VK_TRUE);
@@ -221,6 +220,7 @@ VkSwapchainKHR createSwapchain(VkDevice device, VkPhysicalDevice physicalDevice,
   createInfo.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
   createInfo.compositeAlpha = surfaceCompostite;
   createInfo.presentMode = VK_PRESENT_MODE_FIFO_KHR; // TODO: check if device supports?
+  createInfo.oldSwapchain = oldSwapchain;
 
   VkSwapchainKHR swapChain;
   VK_CHECK(vkCreateSwapchainKHR(device, &createInfo, 0, &swapChain));
@@ -473,6 +473,62 @@ VkImageMemoryBarrier imageBarrier(VkImage image, VkAccessFlags srcAccessMask, Vk
   return imMemBarrier;
 }
 
+struct Swapchain
+{
+  VkSwapchainKHR swapchain;
+
+  std::vector<VkImage> images;
+  std::vector<VkImageView> imageViews;
+  std::vector<VkFramebuffer> framebuffers;
+
+  uint32_t width, height;
+};
+
+void destroySwapchain(const Swapchain& swapchain, VkDevice device)
+{
+  for(uint32_t i = 0 ; i < swapchain.images.size() ; i++)
+  {
+    vkDestroyFramebuffer(device, swapchain.framebuffers[i], NULL);
+  }
+  for(uint32_t i = 0 ; i < swapchain.images.size() ; i++)
+  {
+    vkDestroyImageView(device, swapchain.imageViews[i], NULL);
+  }
+  vkDestroySwapchainKHR(device, swapchain.swapchain, 0);
+}
+
+void createSwapchain(Swapchain& swapchain, VkDevice device, VkPhysicalDevice physicalDevice, VkSurfaceKHR surface, VkFormat swapchainFormat, uint32_t* familyIndex, uint32_t width, uint32_t height, VkRenderPass renderPass, VkSwapchainKHR oldSwapchain = 0)
+{
+  swapchain.swapchain = createSwapchain(device, physicalDevice, surface, swapchainFormat, familyIndex, width, height, oldSwapchain);
+
+  swapchain.width = width;
+  swapchain.height = height;
+
+  uint32_t swapchainImageCount = 0;
+  VK_CHECK(vkGetSwapchainImagesKHR(device, swapchain.swapchain, &swapchainImageCount, 0));
+  swapchain.images.resize(swapchainImageCount); 
+  VK_CHECK(vkGetSwapchainImagesKHR(device, swapchain.swapchain, &swapchainImageCount, swapchain.images.data()));
+
+  swapchain.imageViews.resize(swapchainImageCount);
+  for(uint32_t i = 0 ; i < swapchainImageCount ; i++)
+    swapchain.imageViews[i] = createImageView(device, swapchain.images[i], swapchainFormat);
+
+  swapchain.framebuffers.resize(swapchainImageCount);
+  for(uint32_t i = 0 ; i < swapchainImageCount ; i++)
+    swapchain.framebuffers[i] = createFramebuffer(device, renderPass, swapchain.imageViews[i], swapchain.width, swapchain.height);
+}
+
+void resizeSwapchain(Swapchain& swapchain, VkDevice device, VkPhysicalDevice physicalDevice, VkSurfaceKHR surface, VkFormat swapchainFormat, uint32_t* familyIndex, uint32_t width, uint32_t height, VkRenderPass renderPass)
+{
+  VkSwapchainKHR oldSwapchain = swapchain.swapchain;
+
+  Swapchain old = swapchain;
+
+  createSwapchain(swapchain, device, physicalDevice, surface, swapchainFormat, familyIndex, width, height, renderPass, oldSwapchain);
+  VK_CHECK(vkDeviceWaitIdle(device));
+  destroySwapchain(old, device);
+}
+
 int main(int argc, char** argv)
 {
   // Initialize SDL
@@ -495,6 +551,7 @@ int main(int argc, char** argv)
   assert(physicalDevice);
 
   uint32_t familyIndex = getGraphicsQueueFamily(physicalDevice);
+  assert(familyIndex != VK_QUEUE_FAMILY_IGNORED);
   VkDevice device = createDevice(instance, physicalDevice);
 
   // Create Window
@@ -521,7 +578,7 @@ int main(int argc, char** argv)
 
   VkFormat swapchainFormat = getSwapchainFormat(physicalDevice, surface);
 
-  VkSwapchainKHR swapChain = createSwapchain(device, physicalDevice, surface, swapchainFormat, &familyIndex, window);
+  //VkSwapchainKHR swapChain = createSwapchain(device, physicalDevice, surface, swapchainFormat, &familyIndex, window);
 
   VkSemaphore acquireSemaphore = createSemaphore(device); // For waiting for a GPU to be done with an Image before you render to it again
   VkSemaphore releaseSemaphore = createSemaphore(device); // For waiting until command buffer commands have finished executing before showing the image on screen
@@ -546,18 +603,8 @@ int main(int argc, char** argv)
   VkPipelineCache pipelineCache = VK_NULL_HANDLE;
   VkPipeline trianglePipeline = createGraphicsPipeline(device, pipelineCache, renderPass, pipelineLayout, triangleVertSM, triangleFragSM);
 
-  uint32_t swapchainImageCount = 0;
-  VK_CHECK(vkGetSwapchainImagesKHR(device, swapChain, &swapchainImageCount, 0));
-  std::vector<VkImage> swapchainImages(swapchainImageCount); 
-  VK_CHECK(vkGetSwapchainImagesKHR(device, swapChain, &swapchainImageCount, swapchainImages.data()));
-
-  std::vector<VkImageView> swapchainImageViews(swapchainImageCount);
-  for(uint32_t i = 0 ; i < swapchainImageCount ; i++)
-    swapchainImageViews[i] = createImageView(device, swapchainImages[i], swapchainFormat);
-
-  std::vector<VkFramebuffer> swapchainFramebuffers(swapchainImageCount);
-  for(uint32_t i = 0 ; i < swapchainImageCount ; i++)
-    swapchainFramebuffers[i] = createFramebuffer(device, renderPass, swapchainImageViews[i], windowWidth, windowHeight);
+  Swapchain swapchain;
+  createSwapchain(swapchain, device, physicalDevice, surface, swapchainFormat, &familyIndex, windowWidth, windowHeight, renderPass);
 
   VkCommandPool commandPool = createCommandPool(device, familyIndex);
 
@@ -572,11 +619,27 @@ int main(int argc, char** argv)
   bool run = true;
   while (run)
   {
+    SDL_Event event;
+    while (SDL_PollEvent(&event))
+    {
+      if (event.type == SDL_QUIT)
+      {
+        run = false;
+      }
+
+      if(event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_RESIZED)
+      {
+        VkSurfaceCapabilitiesKHR curSurfaceCaps;
+        VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, &curSurfaceCaps));
+        resizeSwapchain(swapchain, device, physicalDevice, surface, swapchainFormat, &familyIndex, curSurfaceCaps.currentExtent.width, curSurfaceCaps.currentExtent.height, renderPass);
+      }
+    }
+
     // Present swap chain to window
     uint32_t imageIndex = 0;
 
     // The assert fails on Intel GPU for some reason
-    if(vkAcquireNextImageKHR(device, swapChain, 0, acquireSemaphore, VK_NULL_HANDLE, &imageIndex) != VK_SUCCESS) // TODO: assert in a loop is slow
+    if(vkAcquireNextImageKHR(device, swapchain.swapchain, 0, acquireSemaphore, VK_NULL_HANDLE, &imageIndex) != VK_SUCCESS) // TODO: assert in a loop is slow
     {
       continue;
     }
@@ -588,8 +651,8 @@ int main(int argc, char** argv)
     VK_CHECK(vkBeginCommandBuffer(commandBuffer, &beginInfo));
 
     // Need to transition to a valid rendering layout like to save on GPU bandwidth or something
-    VkImageMemoryBarrier renderBeginBarrier = imageBarrier(swapchainImages[imageIndex], 0, VK_IMAGE_LAYOUT_UNDEFINED, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_DEPENDENCY_BY_REGION_BIT, 0, 0, 0, 0, 1, &renderBeginBarrier);
+    VkImageMemoryBarrier renderBeginBarrier = imageBarrier(swapchain.images[imageIndex], 0, VK_IMAGE_LAYOUT_UNDEFINED, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_DEPENDENCY_BY_REGION_BIT, 0, 0, 0, 0, 1, &renderBeginBarrier);
 
     VkClearColorValue color = { 48.0f / 255.0f , 10.0f / 255.0f , 36.0f / 255.0f , 1};
 
@@ -598,18 +661,18 @@ int main(int argc, char** argv)
 
     VkRenderPassBeginInfo passBeginInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
     passBeginInfo.renderPass = renderPass;
-    passBeginInfo.framebuffer = swapchainFramebuffers[imageIndex];
-    passBeginInfo.renderArea.extent.width = windowWidth;
-    passBeginInfo.renderArea.extent.height = windowHeight;
+    passBeginInfo.framebuffer = swapchain.framebuffers[imageIndex];
+    passBeginInfo.renderArea.extent.width = swapchain.width;
+    passBeginInfo.renderArea.extent.height = swapchain.height;
     passBeginInfo.clearValueCount = 1;
     passBeginInfo.pClearValues = &clearColorValue;
 
     vkCmdBeginRenderPass(commandBuffer, &passBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-    VkViewport viewport = { 0, float(windowHeight), float(windowWidth), -float(windowHeight), 0, 1 };
+    VkViewport viewport = { 0, float(swapchain.height), float(swapchain.width), -float(swapchain.height), 0, 1 };
     VkRect2D scissor = {};
-    scissor.extent.height = windowHeight;
-    scissor.extent.width = windowWidth;
+    scissor.extent.height = swapchain.height;
+    scissor.extent.width = swapchain.width;
 
     vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
     vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
@@ -621,7 +684,7 @@ int main(int argc, char** argv)
     vkCmdEndRenderPass(commandBuffer);
 
     // Need to transition to the present image layout before presenting to the screen
-    VkImageMemoryBarrier renderEndBarrier = imageBarrier(swapchainImages[imageIndex], VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    VkImageMemoryBarrier renderEndBarrier = imageBarrier(swapchain.images[imageIndex], VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_DEPENDENCY_BY_REGION_BIT, 0, 0, 0, 0, 1, &renderEndBarrier);
 
     VK_CHECK(vkEndCommandBuffer(commandBuffer));
@@ -645,19 +708,12 @@ int main(int argc, char** argv)
     presentInfo.waitSemaphoreCount = 1;
     presentInfo.pWaitSemaphores = &releaseSemaphore;
     presentInfo.swapchainCount = 1;
-    presentInfo.pSwapchains = &swapChain;
+    presentInfo.pSwapchains = &swapchain.swapchain;
     presentInfo.pImageIndices = &imageIndex;
 
-    VK_CHECK(vkQueuePresentKHR(queue, &presentInfo));
+    vkQueuePresentKHR(queue, &presentInfo);
     VK_CHECK(vkDeviceWaitIdle(device));
-    SDL_Event event;
-    while (SDL_PollEvent(&event))
-    {
-      if (event.type == SDL_QUIT)
-      {
-        run = false;
-      }
-    }
+
   }
 
   VK_CHECK(vkDeviceWaitIdle(device));
@@ -665,14 +721,7 @@ int main(int argc, char** argv)
   vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
   vkDestroyCommandPool(device, commandPool, NULL);
   //vkDestroyDebugReportCallbackEXT(instance, debugCallback, NULL);
-  for(uint32_t i = 0 ; i < swapchainImageCount ; i++)
-  {
-    vkDestroyFramebuffer(device, swapchainFramebuffers[i], NULL);
-  }
-  for(uint32_t i = 0 ; i < swapchainImageCount ; i++)
-  {
-    vkDestroyImageView(device, swapchainImageViews[i], NULL);
-  }
+  destroySwapchain(swapchain, device);
   vkDestroyPipeline(device, trianglePipeline, NULL);
   vkDestroyPipelineLayout(device, pipelineLayout, NULL);
   vkDestroyPipelineCache(device, pipelineCache, NULL);
@@ -681,7 +730,6 @@ int main(int argc, char** argv)
   vkDestroyRenderPass(device, renderPass, NULL);
   vkDestroySemaphore(device, releaseSemaphore, NULL);
   vkDestroySemaphore(device, acquireSemaphore, NULL);
-  vkDestroySwapchainKHR(device, swapChain, 0);
   vkDestroySurfaceKHR(instance, surface, NULL);
   vkDestroyDevice(device, NULL);
   PFN_vkDestroyDebugReportCallbackEXT vkDestroyDebugReportCallbackEXT = (PFN_vkDestroyDebugReportCallbackEXT)vkGetInstanceProcAddr(instance, "vkDestroyDebugReportCallbackEXT");
