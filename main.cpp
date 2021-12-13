@@ -572,6 +572,84 @@ int main(int argc, char** argv)
   bool run = true;
   while (run)
   {
+    // Present swap chain to window
+    uint32_t imageIndex = 0;
+
+    // The assert fails on Intel GPU for some reason
+    if(vkAcquireNextImageKHR(device, swapChain, 0, acquireSemaphore, VK_NULL_HANDLE, &imageIndex) != VK_SUCCESS) // TODO: assert in a loop is slow
+    {
+      continue;
+    }
+
+    VK_CHECK(vkResetCommandPool(device, commandPool, 0));
+
+    VkCommandBufferBeginInfo beginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    VK_CHECK(vkBeginCommandBuffer(commandBuffer, &beginInfo));
+
+    // Need to transition to a valid rendering layout like to save on GPU bandwidth or something
+    VkImageMemoryBarrier renderBeginBarrier = imageBarrier(swapchainImages[imageIndex], 0, VK_IMAGE_LAYOUT_UNDEFINED, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_DEPENDENCY_BY_REGION_BIT, 0, 0, 0, 0, 1, &renderBeginBarrier);
+
+    VkClearColorValue color = { 48.0f / 255.0f , 10.0f / 255.0f , 36.0f / 255.0f , 1};
+
+    VkClearValue clearColorValue = {};
+    clearColorValue.color = color;
+
+    VkRenderPassBeginInfo passBeginInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+    passBeginInfo.renderPass = renderPass;
+    passBeginInfo.framebuffer = swapchainFramebuffers[imageIndex];
+    passBeginInfo.renderArea.extent.width = windowWidth;
+    passBeginInfo.renderArea.extent.height = windowHeight;
+    passBeginInfo.clearValueCount = 1;
+    passBeginInfo.pClearValues = &clearColorValue;
+
+    vkCmdBeginRenderPass(commandBuffer, &passBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+    VkViewport viewport = { 0, float(windowHeight), float(windowWidth), -float(windowHeight), 0, 1 };
+    VkRect2D scissor = {};
+    scissor.extent.height = windowHeight;
+    scissor.extent.width = windowWidth;
+
+    vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+    vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+    // Draw calls go here
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, trianglePipeline);
+    vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+
+    vkCmdEndRenderPass(commandBuffer);
+
+    // Need to transition to the present image layout before presenting to the screen
+    VkImageMemoryBarrier renderEndBarrier = imageBarrier(swapchainImages[imageIndex], VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_DEPENDENCY_BY_REGION_BIT, 0, 0, 0, 0, 1, &renderEndBarrier);
+
+    VK_CHECK(vkEndCommandBuffer(commandBuffer));
+
+    VkPipelineStageFlags submitStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+
+
+    // Need semaphore to tell GPU to not run commands until the image is ready
+    VkSubmitInfo submitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+    submitInfo.waitSemaphoreCount = 1;
+    submitInfo.pWaitSemaphores = &acquireSemaphore;
+    submitInfo.pWaitDstStageMask = &submitStageMask;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+    submitInfo.signalSemaphoreCount = 1;
+    submitInfo.pSignalSemaphores = &releaseSemaphore;
+
+    vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
+
+    VkPresentInfoKHR presentInfo = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
+    presentInfo.waitSemaphoreCount = 1;
+    presentInfo.pWaitSemaphores = &releaseSemaphore;
+    presentInfo.swapchainCount = 1;
+    presentInfo.pSwapchains = &swapChain;
+    presentInfo.pImageIndices = &imageIndex;
+
+    VK_CHECK(vkQueuePresentKHR(queue, &presentInfo));
+    VK_CHECK(vkDeviceWaitIdle(device));
     SDL_Event event;
     while (SDL_PollEvent(&event))
     {
@@ -579,85 +657,6 @@ int main(int argc, char** argv)
       {
         run = false;
       }
-
-      // Present swap chain to window
-      uint32_t imageIndex = 0;
-
-      // The assert fails on Intel GPU for some reason
-      if(vkAcquireNextImageKHR(device, swapChain, 0, acquireSemaphore, VK_NULL_HANDLE, &imageIndex) != VK_SUCCESS) // TODO: assert in a loop is slow
-      {
-        continue;
-      }
-
-      VK_CHECK(vkResetCommandPool(device, commandPool, 0));
-
-      VkCommandBufferBeginInfo beginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
-      beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-      VK_CHECK(vkBeginCommandBuffer(commandBuffer, &beginInfo));
-
-      // Need to transition to a valid rendering layout like to save on GPU bandwidth or something
-      VkImageMemoryBarrier renderBeginBarrier = imageBarrier(swapchainImages[imageIndex], 0, VK_IMAGE_LAYOUT_UNDEFINED, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-      vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_DEPENDENCY_BY_REGION_BIT, 0, 0, 0, 0, 1, &renderBeginBarrier);
-
-      VkClearColorValue color = { 48.0f / 255.0f , 10.0f / 255.0f , 36.0f / 255.0f , 1};
-
-      VkClearValue clearColorValue = {};
-      clearColorValue.color = color;
-
-      VkRenderPassBeginInfo passBeginInfo = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
-      passBeginInfo.renderPass = renderPass;
-      passBeginInfo.framebuffer = swapchainFramebuffers[imageIndex];
-      passBeginInfo.renderArea.extent.width = windowWidth;
-      passBeginInfo.renderArea.extent.height = windowHeight;
-      passBeginInfo.clearValueCount = 1;
-      passBeginInfo.pClearValues = &clearColorValue;
-
-      vkCmdBeginRenderPass(commandBuffer, &passBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
-
-      VkViewport viewport = { 0, float(windowHeight), float(windowWidth), -float(windowHeight), 0, 1 };
-      VkRect2D scissor = {};
-      scissor.extent.height = windowHeight;
-      scissor.extent.width = windowWidth;
-
-      vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
-      vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
-
-      // Draw calls go here
-      vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, trianglePipeline);
-      vkCmdDraw(commandBuffer, 3, 1, 0, 0);
-
-      vkCmdEndRenderPass(commandBuffer);
-
-      // Need to transition to the present image layout before presenting to the screen
-      VkImageMemoryBarrier renderEndBarrier = imageBarrier(swapchainImages[imageIndex], VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
-      vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_DEPENDENCY_BY_REGION_BIT, 0, 0, 0, 0, 1, &renderEndBarrier);
-
-      VK_CHECK(vkEndCommandBuffer(commandBuffer));
-
-      VkPipelineStageFlags submitStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-
-
-      // Need semaphore to tell GPU to not run commands until the image is ready
-      VkSubmitInfo submitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
-      submitInfo.waitSemaphoreCount = 1;
-      submitInfo.pWaitSemaphores = &acquireSemaphore;
-      submitInfo.pWaitDstStageMask = &submitStageMask;
-      submitInfo.commandBufferCount = 1;
-      submitInfo.pCommandBuffers = &commandBuffer;
-      submitInfo.signalSemaphoreCount = 1;
-      submitInfo.pSignalSemaphores = &releaseSemaphore;
-
-      vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
-
-      VkPresentInfoKHR presentInfo = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
-      presentInfo.waitSemaphoreCount = 1;
-      presentInfo.pWaitSemaphores = &releaseSemaphore;
-      presentInfo.swapchainCount = 1;
-      presentInfo.pSwapchains = &swapChain;
-      presentInfo.pImageIndices = &imageIndex;
-
-      VK_CHECK(vkQueuePresentKHR(queue, &presentInfo));
-      VK_CHECK(vkDeviceWaitIdle(device));
     }
   }
 
