@@ -10,6 +10,8 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_syswm.h>
 #include <SDL2/SDL_vulkan.h>
+#include <vector>
+#include <algorithm>
 
 #define _DEBUG
 
@@ -70,8 +72,9 @@ VkInstance createInstance()
   {
     VK_KHR_SURFACE_EXTENSION_NAME,
 #ifdef VK_USE_PLATFORM_XLIB_KHR
-    VK_KHR_XLIB_SURFACE_EXTENSION_NAME
+    VK_KHR_XLIB_SURFACE_EXTENSION_NAME,
 #endif
+    VK_EXT_DEBUG_REPORT_EXTENSION_NAME,
   };
 
   createInfo.ppEnabledExtensionNames = extensions;
@@ -79,6 +82,7 @@ VkInstance createInstance()
 
   VkInstance instance = 0;
   VK_CHECK(vkCreateInstance(&createInfo, 0, &instance));
+
 
   return instance;
 }
@@ -108,9 +112,12 @@ VkSurfaceKHR createSurfaceFromSDL(SDL_Window* window, VkInstance instance)
 
 uint32_t getGraphicsQueueFamily(VkPhysicalDevice physicalDevice)
 {
-  VkQueueFamilyProperties queueFamilyProperties[64];
-  uint32_t queueFamilyPropertyCount = sizeof(queueFamilyProperties) / sizeof(queueFamilyProperties[0]);
-  vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyPropertyCount, queueFamilyProperties);
+  uint32_t queueFamilyPropertyCount = 0;
+  vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyPropertyCount, 0);
+
+  std::vector<VkQueueFamilyProperties> queueFamilyProperties;
+  queueFamilyProperties.resize(queueFamilyPropertyCount);
+  vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyPropertyCount, queueFamilyProperties.data());
 
   for(uint32_t i = 0 ; i < queueFamilyPropertyCount ; i++)
   {
@@ -152,29 +159,57 @@ VkDevice createDevice(VkInstance instance, VkPhysicalDevice physicalDevice)
 
 VkFormat getSwapchainFormat(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface)
 {
-  // TODO: Ask how many formats the device supports
-  VkSurfaceFormatKHR formats[16];
-  uint32_t formatCount = sizeof(formats) / sizeof(formats[0]);
-  VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &formatCount, formats));
-
+  uint32_t formatCount = 0;
+  VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &formatCount, 0));
   assert(formatCount > 0);
+
+  std::vector<VkSurfaceFormatKHR> formats(formatCount);
+  VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &formatCount, formats.data()));
+
+  // TODO: Maybe check for HDR? Don't have the hardware to test this now, but might me nice to add.
+
+  // If format count is 1 and it is undefined, than the device supports any format
+  if((formatCount == 1) && (formats[0].format == VK_FORMAT_UNDEFINED))
+    return VK_FORMAT_R8G8B8A8_UNORM;
+
+  for(uint32_t i = 0 ; i < formatCount ; i++)
+  {
+    if((formats[i].format == VK_FORMAT_R8G8B8A8_UNORM) || (formats[i].format == VK_FORMAT_B8G8R8A8_UNORM))
+      return formats[i].format;
+  }
+
+  printf("FORMAT COUNT: %d\n",formatCount);
+
+  assert(0);
 
   return formats[0].format;
 }
 
 VkSwapchainKHR createSwapchain(VkDevice device, VkPhysicalDevice physicalDevice, VkSurfaceKHR surface, VkFormat swapchainFormat, uint32_t* familyIndex, SDL_Window* window)
 {
+
+  // Get surface capabilities
+  VkSurfaceCapabilitiesKHR surfaceCaps;
+  vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, &surfaceCaps);
+
+  VkCompositeAlphaFlagBitsKHR surfaceCompostite = (surfaceCaps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR) 
+  ? VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR : (surfaceCaps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR) 
+  ? VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR : (surfaceCaps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR) ? VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR
+  : VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
+
+
   // Create swap chain
   int width, height;
   SDL_GetWindowSize(window, &width, &height);
 
   VkBool32 supported;
   VK_CHECK(vkGetPhysicalDeviceSurfaceSupportKHR(physicalDevice, *familyIndex, surface, &supported));
+  assert(supported == VK_TRUE);
 
   VkSwapchainCreateInfoKHR createInfo = { VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR };
 
   createInfo.surface = surface;
-  createInfo.minImageCount = 2; // For double buffer setup
+  createInfo.minImageCount = std::max(2u, surfaceCaps.minImageCount); // For double buffer setup
   createInfo.imageFormat = swapchainFormat; // TODO: find format that device supports
   createInfo.imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
   createInfo.imageExtent.width = width;
@@ -184,7 +219,7 @@ VkSwapchainKHR createSwapchain(VkDevice device, VkPhysicalDevice physicalDevice,
   createInfo.queueFamilyIndexCount = 1;
   createInfo.pQueueFamilyIndices = familyIndex;
   createInfo.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
-  createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+  createInfo.compositeAlpha = surfaceCompostite;
   createInfo.presentMode = VK_PRESENT_MODE_FIFO_KHR; // TODO: check if device supports?
 
   VkSwapchainKHR swapChain;
@@ -392,6 +427,52 @@ VkPipeline createGraphicsPipeline(VkDevice device, VkPipelineCache pipelineCache
   return pipeline;
 }
 
+VkBool32 debugReportCallback(VkDebugReportFlagsEXT flags, VkDebugReportObjectTypeEXT objectType, uint64_t object, size_t location, int32_t messageCode, const char* pLayerPrefix, const char* pMessage, void* pUserData)
+{
+
+  const char* type = (flags & VK_DEBUG_REPORT_WARNING_BIT_EXT ) ? "WARNING" : (flags & VK_DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT ) ? "PERFORMANCE WARNING" : "ERROR";
+
+  printf("%s: %s\n",type, pMessage);
+  if(flags & VK_DEBUG_REPORT_ERROR_BIT_EXT)
+    assert(!"Validtion error encountered!");
+
+  // This should always return false according to the spec.
+  return VK_FALSE;
+}
+
+VkDebugReportCallbackEXT registerDebugCallback(VkInstance instance)
+{
+
+  // How to load extensions manually
+  PFN_vkCreateDebugReportCallbackEXT vkCreateDebugReportCallbackEXT = (PFN_vkCreateDebugReportCallbackEXT)vkGetInstanceProcAddr(instance, "vkCreateDebugReportCallbackEXT");
+
+  VkDebugReportCallbackEXT debugCallback = {};
+  VkDebugReportCallbackCreateInfoEXT createInfo = { VK_STRUCTURE_TYPE_DEBUG_REPORT_CALLBACK_CREATE_INFO_EXT };
+  createInfo.flags = VK_DEBUG_REPORT_WARNING_BIT_EXT | VK_DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT | VK_DEBUG_REPORT_ERROR_BIT_EXT;
+  createInfo.pfnCallback = debugReportCallback;
+    //void*                           pUserData;
+  VK_CHECK(vkCreateDebugReportCallbackEXT(instance, &createInfo, NULL, &debugCallback));
+
+  return debugCallback;
+}
+
+VkImageMemoryBarrier imageBarrier(VkImage image, VkAccessFlags srcAccessMask, VkImageLayout srcImageLayout, VkAccessFlags dstAccessMask, VkImageLayout dstImageLayout)
+{
+  VkImageMemoryBarrier imMemBarrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+  imMemBarrier.srcAccessMask = srcAccessMask;
+  imMemBarrier.dstAccessMask = dstAccessMask;
+  imMemBarrier.oldLayout = srcImageLayout;
+  imMemBarrier.newLayout = dstImageLayout;
+  imMemBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; // We won't be switching graphics queues when we do this just image layouts
+  imMemBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; // We won't be switching graphics queues when we do this just image layouts
+  imMemBarrier.image = image;
+  imMemBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT; // Assume that we don't have depth and are only transitioning color
+  imMemBarrier.subresourceRange.levelCount = VK_REMAINING_MIP_LEVELS; // Transitioning entire image like all mip levels
+  imMemBarrier.subresourceRange.layerCount = VK_REMAINING_ARRAY_LAYERS; // Transitioning all array layers
+
+  return imMemBarrier;
+}
+
 int main(int argc, char** argv)
 {
   // Initialize SDL
@@ -402,6 +483,8 @@ int main(int argc, char** argv)
   }
 
   VkInstance instance = createInstance();
+
+  VkDebugReportCallbackEXT debugCallback = registerDebugCallback(instance);
 
   // Get Physical device
   VkPhysicalDevice physicalDevices[16];
@@ -416,7 +499,7 @@ int main(int argc, char** argv)
 
   // Create Window
   SDL_Window* window = SDL_CreateWindow("VKR", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 
-      1920, 1080, SDL_WINDOW_VULKAN | SDL_WINDOW_SHOWN);
+      1920, 1080, SDL_WINDOW_VULKAN | SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
 
   // Create surface
   // TODO: This is platform specific. Add wayland and windows stuff?
@@ -463,15 +546,16 @@ int main(int argc, char** argv)
   VkPipelineCache pipelineCache = VK_NULL_HANDLE;
   VkPipeline trianglePipeline = createGraphicsPipeline(device, pipelineCache, renderPass, pipelineLayout, triangleVertSM, triangleFragSM);
 
-  VkImage swapchainImages[16]; // TODO: this is bad. Need to ask how many.
-  uint32_t swapchainImageCount = sizeof(swapchainImages) / sizeof(swapchainImages[0]);
-  VK_CHECK(vkGetSwapchainImagesKHR(device, swapChain, &swapchainImageCount, swapchainImages));
+  uint32_t swapchainImageCount = 0;
+  VK_CHECK(vkGetSwapchainImagesKHR(device, swapChain, &swapchainImageCount, 0));
+  std::vector<VkImage> swapchainImages(swapchainImageCount); 
+  VK_CHECK(vkGetSwapchainImagesKHR(device, swapChain, &swapchainImageCount, swapchainImages.data()));
 
-  VkImageView swapchainImageViews[16];
+  std::vector<VkImageView> swapchainImageViews(swapchainImageCount);
   for(uint32_t i = 0 ; i < swapchainImageCount ; i++)
     swapchainImageViews[i] = createImageView(device, swapchainImages[i], swapchainFormat);
 
-  VkFramebuffer swapchainFramebuffers[16];
+  std::vector<VkFramebuffer> swapchainFramebuffers(swapchainImageCount);
   for(uint32_t i = 0 ; i < swapchainImageCount ; i++)
     swapchainFramebuffers[i] = createFramebuffer(device, renderPass, swapchainImageViews[i], windowWidth, windowHeight);
 
@@ -511,6 +595,10 @@ int main(int argc, char** argv)
       beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
       VK_CHECK(vkBeginCommandBuffer(commandBuffer, &beginInfo));
 
+      // Need to transition to a valid rendering layout like to save on GPU bandwidth or something
+      VkImageMemoryBarrier renderBeginBarrier = imageBarrier(swapchainImages[imageIndex], 0, VK_IMAGE_LAYOUT_UNDEFINED, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+      vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_DEPENDENCY_BY_REGION_BIT, 0, 0, 0, 0, 1, &renderBeginBarrier);
+
       VkClearColorValue color = { 48.0f / 255.0f , 10.0f / 255.0f , 36.0f / 255.0f , 1};
 
       VkClearValue clearColorValue = {};
@@ -539,6 +627,10 @@ int main(int argc, char** argv)
       vkCmdDraw(commandBuffer, 3, 1, 0, 0);
 
       vkCmdEndRenderPass(commandBuffer);
+
+      // Need to transition to the present image layout before presenting to the screen
+      VkImageMemoryBarrier renderEndBarrier = imageBarrier(swapchainImages[imageIndex], VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+      vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_DEPENDENCY_BY_REGION_BIT, 0, 0, 0, 0, 1, &renderEndBarrier);
 
       VK_CHECK(vkEndCommandBuffer(commandBuffer));
 
@@ -569,15 +661,34 @@ int main(int argc, char** argv)
     }
   }
 
-  for(int i = 0 ; i < 16 ; i++)
+  VK_CHECK(vkDeviceWaitIdle(device));
+
+  vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+  vkDestroyCommandPool(device, commandPool, NULL);
+  //vkDestroyDebugReportCallbackEXT(instance, debugCallback, NULL);
+  for(uint32_t i = 0 ; i < swapchainImageCount ; i++)
   {
     vkDestroyFramebuffer(device, swapchainFramebuffers[i], NULL);
   }
-  vkDestroyCommandPool(device, commandPool, NULL);
+  for(uint32_t i = 0 ; i < swapchainImageCount ; i++)
+  {
+    vkDestroyImageView(device, swapchainImageViews[i], NULL);
+  }
+  vkDestroyPipeline(device, trianglePipeline, NULL);
+  vkDestroyPipelineLayout(device, pipelineLayout, NULL);
+  vkDestroyPipelineCache(device, pipelineCache, NULL);
+  vkDestroyShaderModule(device, triangleVertSM, NULL);
+  vkDestroyShaderModule(device, triangleFragSM, NULL);
+  vkDestroyRenderPass(device, renderPass, NULL);
+  vkDestroySemaphore(device, releaseSemaphore, NULL);
+  vkDestroySemaphore(device, acquireSemaphore, NULL);
   vkDestroySwapchainKHR(device, swapChain, 0);
   vkDestroySurfaceKHR(instance, surface, NULL);
   vkDestroyDevice(device, NULL);
+  PFN_vkDestroyDebugReportCallbackEXT vkDestroyDebugReportCallbackEXT = (PFN_vkDestroyDebugReportCallbackEXT)vkGetInstanceProcAddr(instance, "vkDestroyDebugReportCallbackEXT");
+  vkDestroyDebugReportCallbackEXT(instance, debugCallback, NULL);
   vkDestroyInstance(instance, NULL);
+  SDL_DestroyWindow(window);
 
   return 0;
 }
