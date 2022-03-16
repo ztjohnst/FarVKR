@@ -1,5 +1,11 @@
-#include <SDL2/SDL_events.h>
-#include <SDL2/SDL_video.h>
+#ifdef __APPLE__
+  #include <SDL2/SDL_events.h>
+  #include <SDL2/SDL_video.h>
+#else
+  #include <SDL2/SDL_events.h>
+  #include <SDL2/SDL_video.h>
+#endif 
+
 #include <vulkan/vulkan_core.h>
 #ifdef __linux__ 
 #define VK_USE_PLATFORM_XLIB_KHR
@@ -8,9 +14,18 @@
 #include <stdio.h>
 #include <cassert>
 #include <vulkan/vulkan.h>
-#include <SDL2/SDL.h>
-#include <SDL2/SDL_syswm.h>
-#include <SDL2/SDL_vulkan.h>
+
+#ifdef __APPLE__
+  #include <vulkan/vulkan_macos.h>
+  #include <SDL2/SDL.h>
+  #include <SDL2/SDL_syswm.h>
+  #include <SDL2/SDL_vulkan.h>
+#else
+  #include <SDL.h>
+  #include <SDL_syswm.h>
+  #include <SDL_vulkan.h>
+#endif
+
 #include <vector>
 #include <algorithm>
 
@@ -78,6 +93,9 @@ VkInstance createInstance()
     VK_KHR_XLIB_SURFACE_EXTENSION_NAME,
 #endif
     VK_EXT_DEBUG_REPORT_EXTENSION_NAME,
+#ifdef __APPLE__
+    VK_MVK_MACOS_SURFACE_EXTENSION_NAME,
+#endif
   };
 
   createInfo.ppEnabledExtensionNames = extensions;
@@ -90,6 +108,7 @@ VkInstance createInstance()
   return instance;
 }
 
+#ifdef __linux__
 VkSurfaceKHR createSurface(SDL_Window* window, VkInstance instance, SDL_SysWMinfo* wm_info)
 {
   VkSurfaceKHR surface;
@@ -104,6 +123,7 @@ VkSurfaceKHR createSurface(SDL_Window* window, VkInstance instance, SDL_SysWMinf
   VK_CHECK(vkCreateXlibSurfaceKHR(instance, &createInfo, 0, &surface));
   return surface;
 }
+#endif
 
 VkSurfaceKHR createSurfaceFromSDL(SDL_Window* window, VkInstance instance)
 {
@@ -144,7 +164,8 @@ VkDevice createDevice(VkInstance instance, VkPhysicalDevice physicalDevice)
   // Add swap chain extension
   const char* extensions[] = 
   {
-    VK_KHR_SWAPCHAIN_EXTENSION_NAME
+    VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+    "VK_KHR_portability_subset",
   };
 
   // Create logical device
